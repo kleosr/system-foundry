@@ -1,0 +1,14 @@
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+.env
+.env.*
+.local/
+*.pem
+*.key
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars

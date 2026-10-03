@@ -1,0 +1,24 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: foundry-redis-latency
+  namespace: foundry
+spec:
+  action: delay
+  mode: all
+  direction: to
+  duration: 5m
+  delay:
+    latency: 200ms
+    jitter: 50ms
+    correlation: "25"
+  selector:
+    namespaces: [foundry]
+    labelSelectors:
+      app: foundry-api
+  target:
+    mode: all
+    selector:
+      namespaces: [foundry]
+      labelSelectors:
+        app.kubernetes.io/name: redis

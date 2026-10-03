@@ -1,0 +1,61 @@
+name: preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+  TF_VAR_image_tag: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  TF_VAR_postgres_password: ${{ secrets.PREVIEW_POSTGRES_PASSWORD }}
+  TF_VAR_app_password: ${{ secrets.PREVIEW_APP_PASSWORD }}
+  TF_VAR_signing_key_pem: ${{ secrets.PREVIEW_SIGNING_KEY_PEM }}
+  TF_VAR_operator_password: ${{ secrets.PREVIEW_OPERATOR_PASSWORD }}
+  TF_VAR_webhook_secret: ${{ secrets.PREVIEW_WEBHOOK_SECRET }}
+  PREVIEW_STATE: /var/lib/foundry-previews/pr-${{ github.event.pull_request.number }}.tfstate
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, foundry-preview]
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Build image
+        working-directory: .
+        run: docker build -t "systemsfoundry:${TF_VAR_image_tag}" .
+      - run: terraform init -input=false -reconfigure -backend-config="path=${PREVIEW_STATE}"
+      - run: terraform apply -input=false -auto-approve
+      - name: Publish URL
+        run: |
+          echo "Preview for PR ${TF_VAR_pr_number} is at $(terraform output -raw app_url)" >> "$GITHUB_STEP_SUMMARY"
+
+  destroy:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, foundry-preview]
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - run: terraform init -input=false -reconfigure -backend-config="path=${PREVIEW_STATE}"
+      - run: terraform destroy -input=false -auto-approve
+      - name: Remove preview images
+        working-directory: .
+        run: docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "^systemsfoundry:pr-${TF_VAR_pr_number}-" | xargs -r docker image rm

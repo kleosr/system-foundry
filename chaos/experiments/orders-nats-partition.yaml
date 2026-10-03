@@ -1,0 +1,20 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: foundry-orders-nats-partition
+  namespace: foundry
+spec:
+  action: partition
+  mode: all
+  direction: both
+  duration: 2m
+  selector:
+    namespaces: [foundry]
+    labelSelectors:
+      app: foundry-orders
+  target:
+    mode: all
+    selector:
+      namespaces: [foundry]
+      labelSelectors:
+        app.kubernetes.io/name: nats

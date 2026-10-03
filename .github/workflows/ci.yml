@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: foundry_admin
+          POSTGRES_PASSWORD: ci-admin-only
+          POSTGRES_DB: foundry
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U foundry_admin -d foundry"
+          --health-interval 2s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Migrate
+        env:
+          PGPASSWORD: ci-admin-only
+        run: |
+          psql -h localhost -U foundry_admin -d foundry -v ON_ERROR_STOP=1 -f search/sql/20261002_documents.sql
+          psql -h localhost -U foundry_admin -d foundry -v ON_ERROR_STOP=1 -f auth/sql/20261003_credentials.sql
+          PGHOST=localhost POSTGRES_USER=foundry_admin POSTGRES_DB=foundry FOUNDRY_APP_PASSWORD=ci-app-only sh infrastructure/postgres/003_app_login.sh
+      - name: Start NATS JetStream
+        run: docker run -d --name nats -p 4222:4222 nats:2.10 -js
+      - name: Test
+        env:
+          FOUNDRY_TEST_POSTGRES_DSN: postgres://foundry_app:ci-app-only@localhost:5432/foundry?sslmode=disable
+          FOUNDRY_TEST_NATS_URL: nats://localhost:4222
+          FOUNDRY_TEST_TEMPORAL: "1"
+        run: go test ./... -race -count=1
+      - name: Benchmarks run once
+        run: go test ./... -run '^$' -bench . -benchtime 1x
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -diff
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Kubernetes manifests
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work ghcr.io/yannh/kubeconform:latest \
+            -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            autoscaling
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t systemsfoundry:ci .

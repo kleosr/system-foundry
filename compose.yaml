@@ -1,0 +1,95 @@
+name: systems-foundry
+
+x-foundry-env: &foundry-env
+  FOUNDRY_POSTGRES_DSN: postgres://foundry_app:${FOUNDRY_APP_PASSWORD:?run scripts/dev-secrets.sh first}@postgres:5432/foundry?sslmode=disable
+  FOUNDRY_NATS_URL: nats://nats:4222
+  FOUNDRY_TEMPORAL_ADDR: temporal:7233
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: foundry_admin
+      POSTGRES_DB: foundry
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev-secrets.sh first}
+      FOUNDRY_APP_PASSWORD: ${FOUNDRY_APP_PASSWORD:?run scripts/dev-secrets.sh first}
+    volumes:
+      - ./search/sql/20261002_documents.sql:/docker-entrypoint-initdb.d/001_documents.sql:ro
+      - ./auth/sql/20261003_credentials.sql:/docker-entrypoint-initdb.d/002_credentials.sql:ro
+      - ./infrastructure/postgres/003_app_login.sh:/docker-entrypoint-initdb.d/003_app_login.sh:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "foundry_admin", "-d", "foundry"]
+      interval: 2s
+      retries: 30
+
+  nats:
+    image: nats:2.10
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - natsdata:/data
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  temporal:
+    image: temporalio/temporal:latest
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--headless"]
+
+  api:
+    build: .
+    environment:
+      <<: *foundry-env
+      FOUNDRY_MODE: shared
+      FOUNDRY_HTTP_ADDR: 0.0.0.0:8080
+      FOUNDRY_ORIGIN: http://localhost:8080
+      FOUNDRY_REDIS_ADDR: redis:6379
+      FOUNDRY_SIGNING_KEY_FILE: /run/secrets/signing_key
+      FOUNDRY_BOOTSTRAP_OPERATOR_EMAIL: operator@ops.test
+      FOUNDRY_BOOTSTRAP_OPERATOR_PASSWORD_FILE: /run/secrets/operator_password
+      FOUNDRY_WEBHOOK_SECRET: ${FOUNDRY_WEBHOOK_SECRET:?run scripts/dev-secrets.sh first}
+      FOUNDRY_CHAOS_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    secrets:
+      - signing_key
+      - operator_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      redis:
+        condition: service_started
+      temporal:
+        condition: service_started
+
+  orders-worker:
+    build: .
+    entrypoint: ["/orders-worker"]
+    environment:
+      <<: *foundry-env
+    depends_on:
+      - nats
+
+  onboarding-worker:
+    build: .
+    entrypoint: ["/onboarding-worker"]
+    environment:
+      <<: *foundry-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+
+secrets:
+  signing_key:
+    file: ./.local/signing.pem
+  operator_password:
+    file: ./.local/operator-password
+
+volumes:
+  pgdata:
+  natsdata:

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Systems Foundry</title>
+</head>
+<body>
+  <pre id="feed"></pre>
+  <script>
+    const feed = document.querySelector("#feed");
+    const source = new EventSource("/stream");
+    source.addEventListener("token", function (ev) {
+      feed.textContent += ev.data;
+    });
+    source.addEventListener("change", function (ev) {
+      feed.textContent += "\n" + ev.data;
+    });
+  </script>
+</body>
+</html>

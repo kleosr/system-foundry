@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foundry-api
+  namespace: foundry
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: foundry-api
+  template:
+    metadata:
+      labels:
+        app: foundry-api
+    spec:
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        karpenter.sh/capacity-type: on-demand
+      containers:
+        - name: api
+          image: systemsfoundry:local
+          ports:
+            - containerPort: 8080
+          env:
+            - name: FOUNDRY_MODE
+              value: shared
+            - name: FOUNDRY_HTTP_ADDR
+              value: 0.0.0.0:8080
+            - name: FOUNDRY_ORIGIN
+              value: https://foundry.example.com
+            - name: FOUNDRY_NATS_URL
+              value: nats://nats.foundry.svc:4222
+            - name: FOUNDRY_REDIS_ADDR
+              value: redis.foundry.svc:6379
+            - name: FOUNDRY_TEMPORAL_ADDR
+              value: temporal-frontend.foundry.svc:7233
+            - name: FOUNDRY_SIGNING_KEY_FILE
+              value: /run/foundry/signing.pem
+            - name: FOUNDRY_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: foundry
+                  key: postgres-dsn
+            - name: FOUNDRY_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: foundry
+                  key: webhook-secret
+          volumeMounts:
+            - name: signing-key
+              mountPath: /run/foundry
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: foundry
+            items:
+              - key: signing-key-pem
+                path: signing.pem
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foundry-orders
+  namespace: foundry
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: foundry-orders
+  template:
+    metadata:
+      labels:
+        app: foundry-orders
+    spec:
+      terminationGracePeriodSeconds: 30
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: karpenter.sh/capacity-type
+                    operator: In
+                    values: ["spot"]
+      containers:
+        - name: worker
+          image: systemsfoundry:local
+          command: ["/orders-worker"]
+          env:
+            - name: FOUNDRY_NATS_URL
+              value: nats://nats.foundry.svc:4222
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
